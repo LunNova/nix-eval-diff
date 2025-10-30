@@ -522,7 +522,7 @@ for ((i = 1; i < ${#ALL_COMMITS[@]}; i++)); do
 	commit_msg=$(git log --format=%s -1 "$new_commit")
 
 	commit_section="<details>
-<summary>[\`$commit_hash\`] $commit_msg — <b>+$added -$removed ~$changed</b></summary>
+<summary>$commit_hash $commit_msg — <b>+$added -$removed ~$changed</b></summary>
 
 "
 
@@ -537,7 +537,6 @@ $(cat "$added_list")
 \`\`\`
 
 </details>
-
 "
 		fi
 
@@ -562,8 +561,7 @@ $(cat "$removed_list")
 $(cat "$changed_list")
 \`\`\`
 
-</details>
-
+</details>  
 "
 		fi
 	fi
