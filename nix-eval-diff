@@ -176,10 +176,7 @@ if ! git rev-parse --git-dir >/dev/null 2>&1; then
 fi
 
 if [ -z "$SYSTEM" ]; then
-	SYSTEM=$(nix-instantiate --eval -E 'builtins.currentSystem' | tr -d '"')
-	echo -e "${BLUE}Using system: $SYSTEM (builtins.currentSystem)${NC}"
-else
-	echo -e "${BLUE}Using system: $SYSTEM (explicitly set)${NC}"
+	SYSTEM=$(2>/dev/null nix-instantiate --eval -E 'builtins.currentSystem' | tr -d '"')
 fi
 
 if [ $CLEAR_CACHE -eq 1 ]; then
@@ -190,7 +187,6 @@ fi
 mkdir -p "$CACHE_DIR"
 
 echo -e "${BLUE}Extracting commits from range: $COMMIT_RANGE${NC}"
-echo -e "${BLUE}Note: Caching uses tree hashes, so rebased/amended commits with same content reuse cache${NC}"
 
 BASE_COMMIT=$(git rev-list --max-count=1 "${COMMIT_RANGE%%..*}^" 2>/dev/null || git rev-list --max-count=1 "${COMMIT_RANGE%%..*}")
 mapfile -t COMMITS < <(git rev-list --reverse "$COMMIT_RANGE")
