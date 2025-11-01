@@ -1,0 +1,212 @@
+#!/usr/bin/env nix-shell
+#!nix-shell -i bash -p git jq nixVersions.latest nix-diff
+# shellcheck shell=bash
+set -euo pipefail
+
+SYSTEM="${SYSTEM:-}"
+PACKAGES=()
+WORKTREE_DIR="/tmp/nix-diff-range-worktree-$$"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+cleanup() {
+	# Remove all worktrees created by this session
+	for worktree in "${WORKTREE_DIR}"-*; do
+		if [ -d "$worktree" ]; then
+			git worktree remove -f "$worktree" 2>/dev/null || true
+		fi
+	done
+}
+trap cleanup EXIT
+
+usage() {
+	cat <<EOF
+Usage: $0 [OPTIONS] -p PACKAGE... <commit-range>
+
+Run nix-diff on specified derivations across a commit range.
+Shows the detailed differences in dependencies between consecutive commits.
+
+OPTIONS:
+    -p PACKAGE               Nix attribute path to diff (repeatable, e.g., pkgs.hello)
+                            Supports bash expansion: -p{a,b} becomes -pa -pb
+    --system SYSTEM         System to evaluate (default: builtins.currentSystem)
+    -h, --help              Show this help
+
+EXAMPLES:
+    $0 -p pkgs.hello HEAD~3..HEAD
+    $0 -p pkgs.stdenv.cc -p pkgs.llvmPackages.clang main..feature
+    $0 -p{pkgs.hello,pkgs.git} --system x86_64-linux abc123^..def456
+
+NOTES:
+    - Requires nix-diff to be available (provided by nix-shell)
+    - Creates temporary git worktrees for each commit
+    - Always regenerates diffs (no caching)
+EOF
+	exit 0
+}
+
+while [[ $# -gt 0 ]]; do
+	case $1 in
+	-p)
+		if [ -z "${2:-}" ]; then
+			echo "Error: -p requires an argument"
+			exit 1
+		fi
+		PACKAGES+=("$2")
+		shift 2
+		;;
+	--system)
+		if [ -z "${2:-}" ]; then
+			echo "Error: --system requires an argument"
+			exit 1
+		fi
+		SYSTEM="$2"
+		shift 2
+		;;
+	-h | --help) usage ;;
+	-*)
+		echo "Error: Unknown option: $1"
+		echo ""
+		usage
+		;;
+	*)
+		if [ -n "${COMMIT_RANGE:-}" ]; then
+			echo "Error: Multiple commit ranges specified: '$COMMIT_RANGE' and '$1'"
+			exit 1
+		fi
+		COMMIT_RANGE="$1"
+		shift
+		;;
+	esac
+done
+
+if [ -z "${COMMIT_RANGE:-}" ]; then
+	echo "Error: commit range required"
+	usage
+fi
+
+if [ ${#PACKAGES[@]} -eq 0 ]; then
+	echo "Error: at least one package required (use -p)"
+	usage
+fi
+
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+	echo -e "${RED}Error: Not in a git repository${NC}"
+	exit 1
+fi
+
+if [ -z "$SYSTEM" ]; then
+	SYSTEM=$(2>/dev/null nix-instantiate --eval -E 'builtins.currentSystem' | tr -d '"')
+fi
+
+echo -e "${BLUE}Packages to diff:${NC}"
+for pkg in "${PACKAGES[@]}"; do
+	echo "  - $pkg"
+done
+
+BASE_COMMIT=$(git rev-list --max-count=1 "${COMMIT_RANGE%%..*}" 2>/dev/null || git rev-list --max-count=1 "${COMMIT_RANGE%%..*}")
+mapfile -t COMMITS < <(git rev-list --reverse "$COMMIT_RANGE")
+ALL_COMMITS=("$BASE_COMMIT" "${COMMITS[@]}")
+
+echo -e "\n${YELLOW}Will diff ${#PACKAGES[@]} package(s) across ${#COMMITS[@]} commit(s)${NC}\n"
+for i in "${!ALL_COMMITS[@]}"; do
+	commit="${ALL_COMMITS[$i]}"
+	if [ "$i" -eq 0 ]; then
+		marker="${GREEN}[BASE]${NC}"
+	else
+		marker="[$((i))]   "
+	fi
+	echo -e "  $marker $(git log --oneline --no-decorate -1 "$commit")"
+done
+
+echo ""
+read -p "Continue with diff? [y/N] " -n 1 -r
+echo ""
+if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+	echo "Aborted."
+	exit 0
+fi
+
+instantiate_package() {
+	local worktree=$1
+	local package=$2
+	local system=$3
+
+	# Why separate instantiation function: allows reuse and clearer error handling
+	# We instantiate with --system to get the .drv path for the requested architecture
+	local drv_path
+	drv_path=$(
+		cd "$worktree"
+		2>/dev/null nix-instantiate --system "$system" --expr "with import ./. { system = \"$system\"; }; $package"
+	) || {
+		echo -e "${RED}Failed to instantiate $package in $worktree${NC}" >&2
+		return 1
+	}
+
+	echo "$drv_path"
+}
+
+diff_commits() {
+	local old_commit=$1
+	local new_commit=$2
+
+	local old_hash
+	old_hash=$(git rev-parse --short "$old_commit")
+	local new_hash
+	new_hash=$(git rev-parse --short "$new_commit")
+
+	echo -e "${BLUE}Comparing: $old_hash → $new_hash${NC}"
+	echo -e "${BLUE}  Old: $(git log --format=%s -1 "$old_commit")${NC}"
+	echo -e "${BLUE}  New: $(git log --format=%s -1 "$new_commit")${NC}"
+
+	# Why worktrees: allows instantiating derivations from different commits without checkout conflicts
+	local old_worktree="${WORKTREE_DIR}-old-${old_commit}"
+	local new_worktree="${WORKTREE_DIR}-new-${new_commit}"
+
+	git worktree add --detach "$old_worktree" "$old_commit"
+	git worktree add -q --detach "$new_worktree" "$new_commit"
+
+	for package in "${PACKAGES[@]}"; do
+		echo -e "${YELLOW}Package: $package${NC}"
+
+		local old_drv
+		local new_drv
+		old_drv=$(instantiate_package "$old_worktree" "$package" "$SYSTEM") || {
+			echo -e "${RED}Skipping $package (failed to instantiate in old commit)${NC}\n"
+			continue
+		}
+		new_drv=$(instantiate_package "$new_worktree" "$package" "$SYSTEM") || {
+			echo -e "${RED}Skipping $package (failed to instantiate in new commit)${NC}\n"
+			continue
+		}
+
+		if [ "$old_drv" = "$new_drv" ]; then
+			echo -e "${GREEN}  No changes (same derivation)${NC}\n"
+			continue
+		fi
+
+		echo -e "${YELLOW}  Old drv: $old_drv${NC}"
+		echo -e "${YELLOW}  New drv: $new_drv${NC}\n"
+
+		nix-diff --context 10 --skip-already-compared "$old_drv" "$new_drv" || {
+			echo -e "${RED}  nix-diff failed for $package${NC}"
+		}
+		echo ""
+	done
+
+	git worktree remove -f "$old_worktree" 2>/dev/null || true
+	git worktree remove -f "$new_worktree" 2>/dev/null || true
+}
+
+for ((i = 1; i < ${#ALL_COMMITS[@]}; i++)); do
+	old_commit="${ALL_COMMITS[$((i - 1))]}"
+	new_commit="${ALL_COMMITS[$i]}"
+
+	diff_commits "$old_commit" "$new_commit"
+done
+
+echo -e "${GREEN}Done!${NC}"
