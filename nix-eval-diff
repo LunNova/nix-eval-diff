@@ -188,7 +188,7 @@ mkdir -p "$CACHE_DIR"
 
 echo -e "${BLUE}Extracting commits from range: $COMMIT_RANGE${NC}"
 
-BASE_COMMIT=$(git rev-list --max-count=1 "${COMMIT_RANGE%%..*}^" 2>/dev/null || git rev-list --max-count=1 "${COMMIT_RANGE%%..*}")
+BASE_COMMIT=$(git rev-list --max-count=1 "${COMMIT_RANGE%%..*}" 2>/dev/null || git rev-list --max-count=1 "${COMMIT_RANGE%%..*}")
 mapfile -t COMMITS < <(git rev-list --reverse "$COMMIT_RANGE")
 ALL_COMMITS=("$BASE_COMMIT" "${COMMITS[@]}")
 
