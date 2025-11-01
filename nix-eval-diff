@@ -406,7 +406,7 @@ evaluate_commit() {
 
 extract_paths() {
 	local json_file=$1
-	jq -r '.[] | "\(.p)\t\(.o)"' "$json_file" 2>/dev/null | sort
+	jq -r '.[] | "\(.p)\t\(.o)"' "$json_file" 2>/dev/null | sort | grep -v nixpkgs-manual
 }
 
 compare_commits() {
