@@ -244,7 +244,9 @@ let
 
   findAll = path: obj:
     optionalsWithSuccess obj (obj:
-      if obj ? outPath then
+		  if obj == null then
+			[ ]
+      else if obj ? outPath then
         optionalsWithSuccess (obj.outPath or null) (outPath:
           # Why filter: only track packages that would actually build
           # Broken/unavailable packages shouldn't count as "changed" in rebuilds
@@ -313,14 +315,16 @@ let
           then null
           else lib.nameValuePair "__bootStage${toString idx}" (
             (lib.listToAttrs (
-              map (attrPath:
-                let
-                  parts = lib.splitString "." attrPath;
-                  tried = builtins.tryEval (lib.attrByPath parts null stage);
-                  value = if tried.success then tried.value else null;
-                in
-                  lib.nameValuePair attrPath value
-              ) bootAttrPaths
+              lib.filter (x: x.value != null) (
+                map (attrPath:
+                  let
+                    parts = lib.splitString "." attrPath;
+                    tried = builtins.tryEval (lib.attrByPath parts null stage);
+                    value = if tried.success then tried.value else null;
+                  in
+                    lib.nameValuePair attrPath value
+                ) bootAttrPaths
+              )
             )) // { recurseForDerivations = true; }
           )
         ) stages
@@ -361,6 +365,7 @@ evaluate_commit() {
 
 	local eval_result=0
 	(
+		set -euo pipefail
 		cd "$worktree"
 
 		# Why nix-instantiate instead of nix-eval-jobs:
